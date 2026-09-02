@@ -1,0 +1,10 @@
+build/
+dist/
+*.o
+*.exe
+.claude/
+.cursor/
+*.zip
+*.tar.gz
+_trash_*
+AGENTS.md
