@@ -9,6 +9,7 @@ dist/
 *.tar.gz
 _trash_*
 AGENTS.md
+.pi/
 promo/node_modules/
 promo/node_modules_cache/
 promo/package-lock.json

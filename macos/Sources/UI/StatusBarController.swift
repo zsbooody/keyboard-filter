@@ -5,6 +5,8 @@ final class StatusBarController: NSObject {
     private var advancedWC: AdvancedSettingsWindowController?
     private var permissionTimer: Timer?
     private var lastTrusted: Bool?
+    private var lastTapInstalled: Bool?
+    private var tapRetryStreak = 0
 
     func install() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -23,9 +25,15 @@ final class StatusBarController: NSObject {
         let menu = NSMenu()
         let engine = FilterEngine.shared
         let trusted = AccessibilityMonitor.isTrusted()
-        let summary = trusted
-            ? "键盘防抖 · \(engine.statusText()) · \(SettingsStore.shared.pressRate)/秒"
-            : "键盘防抖 · 无辅助功能权限"
+        let tapInstalled = FilterEngine.shared.eventTap != nil
+        let summary: String
+        if !trusted {
+            summary = "键盘防抖 · 无辅助功能权限"
+        } else if !tapInstalled {
+            summary = "键盘防抖 · 正在恢复键盘监听…"
+        } else {
+            summary = "键盘防抖 · \(engine.statusText()) · \(SettingsStore.shared.pressRate)/秒"
+        }
         statusItem?.button?.toolTip = summary
 
         let summaryItem = NSMenuItem(title: summary, action: nil, keyEquivalent: "")
@@ -108,23 +116,40 @@ final class StatusBarController: NSObject {
 
     func checkPermissionAndTap() {
         let trusted = AccessibilityMonitor.isTrusted()
+        var tapInstalled = false
         if trusted {
             if FilterEngine.shared.eventTap == nil {
-                if FilterEngine.shared.installTap() {
-                    AccessibilityGuideWindowController.dismiss()
-                }
+                tapInstalled = FilterEngine.shared.installTap()
+            } else {
+                tapInstalled = true
             }
         } else if FilterEngine.shared.eventTap != nil {
             FilterEngine.shared.removeTap()
         }
-        if lastTrusted != trusted {
+
+        if trusted && tapInstalled {
+            tapRetryStreak = 0
+            AccessibilityGuideWindowController.dismiss()
+        } else if !trusted {
+            tapRetryStreak = 0
+            AccessibilityGuideWindowController.showIfNeeded(mode: .needPermission)
+        } else {
+            // 已授权但事件 tap 尚未建立（登录初期常见），短暂静默重试后再提示。
+            tapRetryStreak += 1
+            if tapRetryStreak >= 3 {
+                AccessibilityGuideWindowController.showIfNeeded(mode: .tapRetry)
+            }
+        }
+
+        if lastTrusted != trusted || lastTapInstalled != tapInstalled {
             lastTrusted = trusted
+            lastTapInstalled = tapInstalled
             rebuildMenu()
         }
     }
 
     @objc private func showPermissionGuide() {
-        AccessibilityGuideWindowController.showIfNeeded()
+        AccessibilityGuideWindowController.showIfNeeded(mode: .needPermission)
         _ = AccessibilityMonitor.isTrusted(prompt: true)
         AccessibilityMonitor.openSystemSettings()
     }

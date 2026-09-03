@@ -26,10 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if AccessibilityMonitor.isTrusted() {
             if !FilterEngine.shared.installTap() {
-                AccessibilityGuideWindowController.showIfNeeded()
+                AccessibilityGuideWindowController.showIfNeeded(mode: .tapRetry)
             }
         } else {
-            AccessibilityGuideWindowController.showIfNeeded()
+            AccessibilityGuideWindowController.showIfNeeded(mode: .needPermission)
         }
         statusBar.checkPermissionAndTap()
     }
