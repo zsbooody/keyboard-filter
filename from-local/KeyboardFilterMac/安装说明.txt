@@ -1,0 +1,67 @@
+键盘防抖工具 macOS 版本 - 安装说明
+
+==========================================
+
+【系统要求】
+- macOS 11.0 (Big Sur) 或更高版本
+- 64位 Intel 或 Apple Silicon 处理器
+
+【安装步骤】
+
+1. 构建应用
+   打开终端，进入项目目录：
+   ```
+   cd KeyboardFilterMac
+   ./build.sh
+   ```
+
+2. 运行应用
+   ```
+   ./KeyboardFilterMac
+   ```
+
+3. 授予权限（重要！）
+   首次运行时：
+   - 点击"打开系统设置"按钮
+   - 进入"安全性与隐私" → "隐私" → "辅助功能"
+   - 解锁设置（点击左下角锁图标）
+   - 勾选"KeyboardFilterMac"应用
+   - 关闭应用并重新启动
+
+【重要提示】
+❗ 必须授予辅助功能权限，否则无法监听键盘事件
+❗ 权限授予后需要重新启动应用
+❗ 绿色软件，无需安装，直接运行
+
+【文件说明】
+- 主程序：KeyboardFilterMac (约 5-10MB，构建后)
+- 配置文件：~/Library/Preferences/com.keyboardfilter.mac.plist
+- 启动项：~/Library/LaunchAgents/com.keyboardfilter.mac.app.plist (如果启用自启动)
+
+【使用说明】
+1. 主界面显示监听状态和按键统计
+2. 点击"打开设置"进行详细配置
+3. 建议设置：
+   - 防抖延迟：50ms (机械键盘)
+   - 最大按键频率：30次/秒
+   - 启用按键过滤：开启
+
+【卸载】
+1. 删除可执行文件
+2. 删除配置文件：
+   ```
+   rm ~/Library/Preferences/com.keyboardfilter.mac.plist
+   ```
+3. 删除启动项（如果存在）：
+   ```
+   rm ~/Library/LaunchAgents/com.keyboardfilter.mac.app.plist
+   ```
+
+【问题排查】
+1. 无法监听键盘：检查辅助功能权限
+2. 过滤不生效：检查设置中的"启用按键过滤"开关
+3. 应用崩溃：查看控制台日志
+
+版本：v1.0.0 (macOS)
+更新：2026-01-26
+基于 Windows v2.3.3.0 开发

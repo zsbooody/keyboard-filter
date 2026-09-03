@@ -1,4 +1,5 @@
 build/
+.build/
 dist/
 *.o
 *.exe
@@ -8,3 +9,7 @@ dist/
 *.tar.gz
 _trash_*
 AGENTS.md
+promo/node_modules/
+promo/node_modules_cache/
+promo/package-lock.json
+promo/media/raw/

@@ -1,0 +1,193 @@
+import SwiftUI
+import Cocoa
+import Foundation
+import Combine
+
+// MARK: - AppDelegate for menu bar app
+@available(macOS 11.0, *)
+class AppDelegate: NSObject, NSApplicationDelegate {
+    var statusItem: NSStatusItem?
+    var settings = SettingsManager()
+    var keyboardMonitor = KeyboardMonitor()
+    var settingsWindow: NSWindow?
+    var popover: NSPopover?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // 初始化键盘监控器
+        keyboardMonitor.settings = settings
+
+        // 创建状态栏图标
+        setupStatusItem()
+
+        // 检查权限
+        keyboardMonitor.refreshAccessibilityPermission()
+
+        // 启动监控（如果之前是运行状态）
+        if settings.enableFiltering && keyboardMonitor.hasAccessibilityPermission {
+            keyboardMonitor.startMonitoring()
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // 停止监控
+        keyboardMonitor.stopMonitoring()
+    }
+
+    func setupStatusItem() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+
+        if let button = statusItem?.button {
+            // 设置图标
+            let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+            let image = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "键盘防抖工具")
+            image?.isTemplate = true
+            button.image = image
+            button.image?.size = NSSize(width: 18, height: 18)
+            button.image?.isTemplate = true
+
+            // 添加点击事件
+            button.action = #selector(togglePopover(_:))
+            button.target = self
+        }
+
+        // 创建菜单
+        let menu = NSMenu()
+
+        // 状态标题
+        let statusTitle = NSMenuItem(title: "键盘防抖工具", action: nil, keyEquivalent: "")
+        statusTitle.isEnabled = false
+        menu.addItem(statusTitle)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // 监听状态
+        let monitoringItem = NSMenuItem(
+            title: keyboardMonitor.isMonitoring ? "停止监听" : "开始监听",
+            action: #selector(toggleMonitoring(_:)),
+            keyEquivalent: "m"
+        )
+        monitoringItem.target = self
+        menu.addItem(monitoringItem)
+
+        // 打开设置
+        let settingsItem = NSMenuItem(
+            title: "打开设置",
+            action: #selector(openSettings(_:)),
+            keyEquivalent: ","
+        )
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        // 退出
+        let quitItem = NSMenuItem(
+            title: "退出",
+            action: #selector(quitApp(_:)),
+            keyEquivalent: "q"
+        )
+        quitItem.target = self
+        menu.addItem(quitItem)
+
+        statusItem?.menu = menu
+    }
+
+    @objc func togglePopover(_ sender: AnyObject?) {
+        // 对于菜单栏应用，我们使用菜单而不是popover
+        // 这个方法保留用于可能的未来扩展
+    }
+
+    @objc func toggleMonitoring(_ sender: AnyObject?) {
+        if keyboardMonitor.isMonitoring {
+            keyboardMonitor.stopMonitoring()
+        } else {
+            if keyboardMonitor.hasAccessibilityPermission {
+                keyboardMonitor.startMonitoring()
+            } else {
+                // 显示权限请求
+                requestAccessibilityPermission()
+            }
+        }
+        updateMenu()
+    }
+
+    @objc func openSettings(_ sender: AnyObject?) {
+        // 创建或显示设置窗口
+        if settingsWindow == nil {
+            createSettingsWindow()
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func quitApp(_ sender: AnyObject?) {
+        NSApplication.shared.terminate(nil)
+    }
+
+    func createSettingsWindow() {
+        let settingsView = SettingsView()
+            .environmentObject(settings)
+            .frame(minWidth: 500, idealWidth: 500, maxWidth: 600,
+                   minHeight: 550, idealHeight: 550, maxHeight: 700)
+
+        let hostingController = NSHostingController(rootView: settingsView)
+
+        settingsWindow = NSWindow(contentViewController: hostingController)
+        settingsWindow?.title = "键盘防抖工具 - 设置"
+        settingsWindow?.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        settingsWindow?.setFrameAutosaveName("KeyboardFilterSettings")
+        settingsWindow?.isReleasedWhenClosed = false
+        settingsWindow?.delegate = self
+
+        // 居中显示
+        settingsWindow?.center()
+    }
+
+    func requestAccessibilityPermission() {
+        // 请求辅助功能权限
+        let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeRetainedValue() as NSString: true]
+        _ = AXIsProcessTrustedWithOptions(options)
+
+        // 稍后检查权限
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            self.keyboardMonitor.refreshAccessibilityPermission()
+            self.updateMenu()
+        }
+    }
+
+    func updateMenu() {
+        guard let menu = statusItem?.menu else { return }
+
+        // 更新监听状态菜单项
+        if let monitoringItem = menu.item(withTitle: "开始监听") ?? menu.item(withTitle: "停止监听") {
+            monitoringItem.title = keyboardMonitor.isMonitoring ? "停止监听" : "开始监听"
+        }
+
+        // 可以添加更多状态更新逻辑
+    }
+}
+
+// MARK: - NSWindowDelegate for settings window
+extension AppDelegate: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        if let window = notification.object as? NSWindow, window == settingsWindow {
+            settingsWindow = nil
+        }
+    }
+}
+
+// MARK: - SwiftUI App
+@main
+@available(macOS 11.0, *)
+struct KeyboardFilterMacApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
+    // 对于菜单栏应用，我们不显示主窗口
+    var body: some Scene {
+        // 空场景，因为我们使用菜单栏
+        Settings {
+            EmptyView()
+        }
+    }
+}
+

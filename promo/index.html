@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Keyboard Filter — 按一次，只算一次</title>
+  <meta name="description" content="Keyboard Filter v2.5.4，机械键盘接触抖动过滤。菜单栏里，约 330KB。" />
+  <link rel="icon" href="media/icon.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="world" aria-hidden="true">
+    <div class="grid"></div>
+    <div class="orb o1"></div>
+    <div class="orb o2"></div>
+  </div>
+
+  <header class="nav">
+    <a class="brand" href="#" data-jump="0">
+      <span class="mark-sm">K</span>
+      <span>Keyboard Filter</span>
+    </a>
+    <nav>
+      <a href="#" data-jump="0.12">抖动</a>
+      <a href="#" data-jump="0.56">试一试</a>
+      <a href="#" data-jump="0.86">获取</a>
+      <button type="button" class="sound" id="soundBtn" aria-pressed="false">声音关</button>
+      <a class="gh" href="https://github.com/zsbooody/keyboard-filter" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </header>
+  <div class="rail"><i id="bar"></i></div>
+
+  <div class="stage" id="stage">
+    <section class="scene" data-scene="title">
+      <p class="kicker">v2.5.4 · 机械键盘防抖</p>
+      <div class="mark">K</div>
+      <h1 class="wordmark">Keyboard Filter</h1>
+      <p class="tag">按一次，只算一次。</p>
+      <p class="hint-scroll" id="scrollHint">向下滚动</p>
+    </section>
+
+    <section class="scene" data-scene="compare">
+      <h2>你按一次，它有时会记两次。</h2>
+      <div class="pair">
+        <article class="glass">
+          <header>未过滤</header>
+          <div class="cap" id="capBad">A</div>
+          <div class="tape" id="tapeBad"></div>
+          <p>接触抖动 · 双击误触</p>
+        </article>
+        <article class="glass good">
+          <header>已过滤</header>
+          <div class="cap" id="capGood">A</div>
+          <div class="tape" id="tapeGood"></div>
+          <p>回弹被丢掉</p>
+        </article>
+      </div>
+      <div class="ruler">
+        <span>0</span>
+        <i class="t1"></i><b class="b1">18ms 回弹</b>
+        <i class="t2"></i><b class="b2">100ms 窗</b>
+        <span>120ms</span>
+      </div>
+    </section>
+
+    <section class="scene" data-scene="mech">
+      <h2>钩子在系统入口</h2>
+      <ul class="lines">
+        <li data-line="0"><em>01</em><div><strong>底层事件钩子</strong><span>Windows WH_KEYBOARD_LL · macOS CGEventTap</span></div></li>
+        <li data-line="1"><em>02</em><div><strong>只学 ≤35ms 硬件回弹</strong><span>和学习阈值脱钩，正常快打不误判</span></div></li>
+        <li data-line="2"><em>03</em><div><strong>≥180ms 系统连发放行</strong><span>长按重复字符不受影响</span></div></li>
+      </ul>
+    </section>
+
+    <section class="scene" data-scene="product">
+      <h2>菜单栏里。画板上点选。</h2>
+      <div class="devices">
+        <figure class="frame">
+          <video id="vidMenu" src="media/menu.mp4" muted playsinline loop></video>
+          <figcaption>全盘 / 手动 / 自动 · 1 · 5 · 10 · 20 次/秒</figcaption>
+        </figure>
+        <figure class="frame wide">
+          <video id="vidBoard" src="media/settings.mp4" muted playsinline loop></video>
+          <figcaption>鼠标点选，选中变蓝</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="scene" data-scene="play">
+      <div class="play-copy">
+        <p class="kicker">停一下，自己按</p>
+        <h2>同一下按键，两边不是同一个结果。</h2>
+      </div>
+      <div class="console" id="console" tabindex="0">
+        <div class="console-bar">
+          <label class="switch"><input type="checkbox" id="bounceToggle" checked /> 模拟抖动</label>
+          <label class="switch"><input type="checkbox" id="filterToggle" checked /> 过滤</label>
+          <fieldset class="rates">
+            <label><input type="radio" name="rate" value="1" /> 1</label>
+            <label><input type="radio" name="rate" value="5" /> 5</label>
+            <label><input type="radio" name="rate" value="10" checked /> 10</label>
+            <label><input type="radio" name="rate" value="20" /> 20</label>
+            <span>次/秒</span>
+          </fieldset>
+          <button type="button" class="tiny" id="demoOnce">演示一次</button>
+          <button type="button" class="tiny ghost" id="clearOut">清空</button>
+        </div>
+        <div class="kb-wrap"><div class="kb" id="keyboard"></div></div>
+        <div class="streams">
+          <div class="stream"><h3>原始信号</h3><div class="out" id="rawOut"></div></div>
+          <div class="stream"><h3>过滤后</h3><div class="out" id="fltOut"></div></div>
+        </div>
+        <p class="hint" id="statusLine">点按键帽，或在此打字。</p>
+      </div>
+    </section>
+
+    <section class="scene" data-scene="modes">
+      <h2>三种模式。默认十次每秒。</h2>
+      <div class="mode-row">
+        <article data-card="0"><i>01</i><h3>全盘</h3><p>全部按键即开即用</p></article>
+        <article data-card="1"><i>02</i><h3>手动选键</h3><p>只保护点亮的键</p></article>
+        <article data-card="2"><i>03</i><h3>自动分析</h3><p>抖动累计纳入，会衰减</p></article>
+      </div>
+      <ul class="nums">
+        <li><strong>≤35ms</strong><span>学习窗</span></li>
+        <li><strong>≥180ms</strong><span>连发放行</span></li>
+        <li><strong>10/秒</strong><span>默认频率</span></li>
+        <li><strong>~300KB</strong><span>Win / Mac</span></li>
+      </ul>
+    </section>
+
+    <section class="scene" data-scene="end">
+      <div class="mark">K</div>
+      <h1 class="wordmark">Keyboard Filter</h1>
+      <p class="end-line"><span>开源</span><span>轻量</span><span>系统级过滤</span></p>
+      <div class="end-cta">
+        <a class="btn" href="https://github.com/zsbooody/keyboard-filter" target="_blank" rel="noopener">GitHub</a>
+        <code>.\build.ps1 -Install</code>
+        <code>./macos/build.sh</code>
+      </div>
+      <p class="fine">Windows 托盘 · macOS 菜单栏 · 不采集按键、不上云</p>
+    </section>
+
+    <p class="sub" id="sub"></p>
+  </div>
+
+  <div class="spine" id="spine" aria-hidden="true"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

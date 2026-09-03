@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>Keyboard Filter — film</title>
+  <link rel="stylesheet" href="film.css" />
+</head>
+<body>
+  <div id="stage">
+    <div class="grid" aria-hidden="true"></div>
+    <div class="orb o1"></div>
+    <div class="orb o2"></div>
+    <div class="progress"><i id="bar"></i></div>
+
+    <section class="scene" data-scene="title">
+      <p class="kicker">v2.5.4</p>
+      <div class="mark">K</div>
+      <h1 class="wordmark">Keyboard Filter</h1>
+      <p class="tag">按一次，只算一次。</p>
+    </section>
+
+    <section class="scene" data-scene="compare">
+      <h2>接触抖动 = 双击 / 连击误触</h2>
+      <div class="pair">
+        <article class="glass bad" id="cardBad">
+          <header>未过滤</header>
+          <div class="cap" id="capBad">A</div>
+          <div class="tape" id="tapeBad"></div>
+          <p>按一次，跳出两个</p>
+        </article>
+        <article class="glass good" id="cardGood">
+          <header>已过滤</header>
+          <div class="cap" id="capGood">A</div>
+          <div class="tape" id="tapeGood"></div>
+          <p>回弹被丢掉</p>
+        </article>
+      </div>
+      <div class="ruler">
+        <span>0</span>
+        <i class="tick bounce-tick"></i>
+        <b>18ms 回弹</b>
+        <i class="tick win-tick"></i>
+        <b class="win">100ms 过滤窗</b>
+        <span>120ms</span>
+      </div>
+    </section>
+
+    <section class="scene" data-scene="mech">
+      <h2>钩子在系统入口</h2>
+      <ul class="lines">
+        <li><em>01</em><div><strong>底层事件钩子</strong><span>Windows WH_KEYBOARD_LL · macOS CGEventTap</span></div></li>
+        <li><em>02</em><div><strong>只学 ≤35ms 硬件回弹</strong><span>和学习阈值脱钩，正常快打不误判</span></div></li>
+        <li><em>03</em><div><strong>≥180ms 系统连发放行</strong><span>长按重复字符不受影响</span></div></li>
+      </ul>
+    </section>
+
+    <section class="scene" data-scene="product">
+      <h2>菜单栏里。画板上点选。</h2>
+      <div class="devices">
+        <figure class="frame menu">
+          <video src="media/menu.mp4" muted playsinline loop></video>
+          <figcaption>全盘 / 手动 / 自动 · 1 · 5 · 10 · 20 次/秒</figcaption>
+        </figure>
+        <figure class="frame board">
+          <video src="media/settings.mp4" muted playsinline loop></video>
+          <figcaption>鼠标点选，选中变蓝</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="scene" data-scene="modes">
+      <h2>三种模式。默认十次每秒。</h2>
+      <div class="mode-row">
+        <article><i>01</i><h3>全盘</h3><p>全部按键即开即用</p></article>
+        <article><i>02</i><h3>手动选键</h3><p>只保护点亮的键</p></article>
+        <article><i>03</i><h3>自动分析</h3><p>抖动累计纳入，会衰减</p></article>
+      </div>
+      <ul class="nums">
+        <li><strong>≤35ms</strong><span>学习窗</span></li>
+        <li><strong>≥180ms</strong><span>连发放行</span></li>
+        <li><strong>10/秒</strong><span>默认频率</span></li>
+        <li><strong>~300KB</strong><span>Win / Mac</span></li>
+      </ul>
+    </section>
+
+    <section class="scene" data-scene="end">
+      <div class="mark lg">K</div>
+      <h1 class="wordmark">Keyboard Filter</h1>
+      <p class="end-line"><span>开源</span><span>轻量</span><span>系统级过滤</span></p>
+      <p class="url">github.com/zsbooody/keyboard-filter</p>
+    </section>
+
+    <div id="sub"></div>
+  </div>
+  <script src="film.js"></script>
+</body>
+</html>
