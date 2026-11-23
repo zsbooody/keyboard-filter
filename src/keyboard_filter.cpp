@@ -14,6 +14,7 @@
 #include <set>
 #include <cstring>
 #include "resource.h"
+#include "key_sequence.h"
 
 #pragma comment(linker, "/subsystem:windows /entry:WinMainCRTStartup")
 #pragma comment(lib, "shell32.lib")
@@ -52,8 +53,6 @@ enum class FilterMode : int {
 static constexpr int kAutoAnomalyToAdd = 5;
 static constexpr int kAutoCleanStreakToRemove = 120;
 static constexpr int kAutoAnomalyDecayEvery = 20;
-// 学习用：只认硬件接触抖动量级，绝不用防抖间隔（否则快打≈全盘）
-static constexpr int kLearnBounceMs = 35;
 static constexpr int kVkCount = 256;
 
 struct KeyRect {
@@ -155,7 +154,7 @@ public:
     static void UpdateHintAndStatus(bool refreshHint = false, bool forceKeys = false) {
         if (refreshHint && s_hwndHint) {
             const wchar_t* hint = s_useAutoPage
-                ? L"自动分析：只把极短接触抖动（约 ≤35ms）计入，正常快打不会纳入。"
+                ? L"自动分析：只把极短接触抖动（≤35 ms）计入。"
                   L"可用鼠标点选/取消任意键。仅鼠标操作。"
                 : L"手动选键：用鼠标点选要防抖的键，再次点击可取消。仅鼠标操作。";
             SetWindowTextW(s_hwndHint, hint);
@@ -663,6 +662,7 @@ private:
     HMENU hKeyMenu;
     HMENU hRateMenu;
     HWND hwnd;
+    UINT taskbarCreated = 0;
     bool autoStart;
     int pressRate;
     FilterMode mode;
@@ -671,6 +671,7 @@ private:
     bool targetMask[kVkCount];
     bool autoMask[kVkCount];
     KeyInfo keyStates[kVkCount];
+    KeySequence keySequences[kVkCount]{};
     AutoKeyStats autoStats[kVkCount];
     AdvancedSettingsDialog advancedDialog;
     int cachedMinIntervalMs;
@@ -835,11 +836,11 @@ private:
             } else {
                 const ULONGLONG sinceDown = now - stats.downStartedMs;
                 stats.rawLastMs = now;
-                if (sinceDown >= 180) {
+                if (sinceDown >= KeySequence::repeatDelayMs) {
                     // 系统自动连发区，完全忽略学习
                     return;
                 }
-                if (sinceLast < static_cast<ULONGLONG>(kLearnBounceMs)) {
+                if (isLearningBounce(sinceLast)) {
                     // 未抬起时极短重复 down = 接触抖动
                     noteAnomaly();
                 }
@@ -862,8 +863,8 @@ private:
             stats.rawLastMs = now;
             stats.hasRaw = true;
 
-            if (dt < static_cast<ULONGLONG>(kLearnBounceMs)) {
-                // 抬起后极短再次按下 = 硬件回弹；正常快打远大于此窗口
+            if (isLearningBounce(dt)) {
+                // 抬起后极短间隔内再次按下：计为疑似硬件回弹。
                 noteAnomaly();
             } else {
                 noteClean();
@@ -1017,36 +1018,30 @@ public:
     }
 
     LRESULT KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-        if (nCode >= 0) {
-            KBDLLHOOKSTRUCT* kbStruct = (KBDLLHOOKSTRUCT*)lParam;
-            int keyCode = kbStruct->vkCode;
-            if (kbStruct->flags & LLKHF_INJECTED) {
-                return CallNextHookEx(keyboardHook, nCode, wParam, lParam);
-            }
-
-            if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
-                if (mode == FilterMode::AutoLearn) {
-                    AnalyzeRawKeyUp(keyCode);
-                }
-                return CallNextHookEx(keyboardHook, nCode, wParam, lParam);
-            }
-
-            if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
-                switch (mode) {
-                    case FilterMode::QuickAll:
-                        if (ApplyDebounce(keyCode)) return 1;
-                        break;
-                    case FilterMode::Advanced:
-                        if (keyCode >= 0 && keyCode < kVkCount && targetMask[keyCode] && ApplyDebounce(keyCode)) {
-                            return 1;
-                        }
-                        break;
-                    case FilterMode::AutoLearn:
-                        AnalyzeRawKeyDown(keyCode);
-                        if (keyCode >= 0 && keyCode < kVkCount && autoMask[keyCode] && ApplyDebounce(keyCode)) {
-                            return 1;
-                        }
-                        break;
+        if (nCode == HC_ACTION) {
+            const auto* event = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+            const unsigned key = event->vkCode;
+            if (!(event->flags & LLKHF_INJECTED) && key < kVkCount) {
+                KeySequence& sequence = keySequences[key];
+                if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP) {
+                    if (mode == FilterMode::AutoLearn || autoStats[key].isDown) {
+                        AnalyzeRawKeyUp(key);
+                    }
+                    if (sequence.release()) return 1;
+                } else if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
+                    const ULONGLONG now = GetTickCount64();
+                    const bool held = sequence.isDown;
+                    const bool repeat = sequence.isRepeat(now);
+                    if (mode == FilterMode::AutoLearn && !repeat) AnalyzeRawKeyDown(key);
+                    if (held) {
+                        if (sequence.blocksDown(repeat)) return 1;
+                    } else {
+                        const bool protectedKey = mode == FilterMode::QuickAll ||
+                            (mode == FilterMode::Advanced && targetMask[key]) ||
+                            (mode == FilterMode::AutoLearn && autoMask[key]);
+                        sequence.press(now, protectedKey, protectedKey && ApplyDebounce(key));
+                        if (sequence.suppressed) return 1;
+                    }
                 }
             }
         }
@@ -1110,10 +1105,14 @@ public:
     }
 
     void InstallHook() {
+        for (auto& sequence : keySequences) sequence = {};
+        for (auto& stats : autoStats) stats = {};
         keyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, StaticKeyboardProc, GetModuleHandle(nullptr), 0);
     }
 
-    void CreateTrayIcon() {
+    bool CreateTrayIcon() {
+        if (nid.hWnd) return Shell_NotifyIcon(NIM_ADD, &nid) != FALSE;
+
         nid.cbSize = sizeof(NOTIFYICONDATA);
         nid.hWnd = hwnd;
         nid.uID = 1;
@@ -1130,15 +1129,19 @@ public:
         }
         nid.hIcon = hIcon;
 
-        UpdateTrayIcon();
-        Shell_NotifyIcon(NIM_ADD, &nid);
+        UpdateTrayTooltip();
+        return Shell_NotifyIcon(NIM_ADD, &nid) != FALSE;
     }
 
-    void UpdateTrayIcon() {
+    void UpdateTrayTooltip() {
         // 托盘 tip 空间有限，只放短状态；详细说明在设置页
         wchar_t tip[128];
         swprintf_s(tip, L"键盘防抖 · %s · %d/秒", GetStatusText().c_str(), pressRate);
         wcsncpy_s(nid.szTip, tip, _TRUNCATE);
+    }
+
+    void UpdateTrayIcon() {
+        UpdateTrayTooltip();
         Shell_NotifyIcon(NIM_MODIFY, &nid);
     }
 
@@ -1183,42 +1186,45 @@ public:
         AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, L"退出");
     }
 
+    static LONG RegisterAutoStart(bool enabled) {
+        constexpr wchar_t runKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+        HKEY key;
+        if (enabled) {
+            wchar_t path[MAX_PATH];
+            const DWORD size = GetModuleFileNameW(nullptr, path, MAX_PATH);
+            if (size == 0) return GetLastError();
+            if (size >= MAX_PATH) return ERROR_INSUFFICIENT_BUFFER;
+
+            const std::wstring quoted = L"\"" + std::wstring(path, size) + L"\"";
+            LONG status = RegCreateKeyExW(HKEY_CURRENT_USER, runKey, 0, nullptr,
+                                         REG_OPTION_NON_VOLATILE, KEY_SET_VALUE,
+                                         nullptr, &key, nullptr);
+            if (status != ERROR_SUCCESS) return status;
+            status = RegSetValueExW(key, L"KeyboardFilter", 0, REG_SZ,
+                                    reinterpret_cast<const BYTE*>(quoted.c_str()),
+                                    static_cast<DWORD>((quoted.size() + 1) * sizeof(wchar_t)));
+            RegCloseKey(key);
+            return status;
+        }
+
+        LONG status = RegOpenKeyExW(HKEY_CURRENT_USER, runKey, 0, KEY_SET_VALUE, &key);
+        if (status == ERROR_SUCCESS) {
+            status = RegDeleteValueW(key, L"KeyboardFilter");
+            RegCloseKey(key);
+        }
+        return status == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : status;
+    }
+
     void UpdateAutoStart(bool enabled) {
+        const LONG status = RegisterAutoStart(enabled);
+        if (status != ERROR_SUCCESS) {
+            const std::wstring message = (enabled ? L"启用自启动失败" : L"禁用自启动失败") +
+                                         std::wstring(L"（系统错误 ") + std::to_wstring(status) + L"）";
+            MessageBoxW(hwnd, message.c_str(), L"错误", MB_OK | MB_ICONERROR);
+            return;
+        }
         autoStart = enabled;
         SaveSettings();
-
-        HKEY hKey;
-        if (enabled) {
-            // 启用自启动（路径加引号，兼容含空格/中文目录）
-            wchar_t exePath[MAX_PATH];
-            DWORD result = GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-
-            if (result > 0 && result < MAX_PATH) {
-                if (RegCreateKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                                  0, nullptr, REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS) {
-                    std::wstring quoted = L"\"";
-                    quoted += exePath;
-                    quoted += L"\"";
-                    LONG setResult = RegSetValueEx(hKey, L"KeyboardFilter", 0, REG_SZ,
-                                                   (LPBYTE)quoted.c_str(),
-                                                   static_cast<DWORD>((quoted.size() + 1) * sizeof(wchar_t)));
-                    RegCloseKey(hKey);
-
-                    if (setResult != ERROR_SUCCESS) {
-                        MessageBoxW(nullptr, L"启用自启动失败", L"错误", MB_OK | MB_ICONERROR);
-                    }
-                }
-            }
-        } else {
-            LONG deleteResult = ERROR_SUCCESS;
-            if (RegOpenKeyEx(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run", 0, KEY_WRITE, &hKey) == ERROR_SUCCESS) {
-                deleteResult = RegDeleteValue(hKey, L"KeyboardFilter");
-                RegCloseKey(hKey);
-            }
-            if (deleteResult != ERROR_SUCCESS && deleteResult != ERROR_FILE_NOT_FOUND) {
-                MessageBoxW(nullptr, L"禁用自启动失败", L"错误", MB_OK | MB_ICONERROR);
-            }
-        }
     }
 
     void HandleTrayMessage(LPARAM lParam) {
@@ -1266,12 +1272,16 @@ public:
 
         SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)this);
 
+        taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
         InstallHook();
         if (!keyboardHook) {
             MessageBoxW(nullptr, L"无法安装键盘钩子！\n\n请确保有足够的权限，\n或尝试以管理员身份运行程序。", L"错误", MB_OK | MB_ICONERROR);
             return;
         }
-        CreateTrayIcon();
+        if (!CreateTrayIcon() && !taskbarCreated) {
+            MessageBoxW(hwnd, L"无法创建托盘图标。", L"错误", MB_OK | MB_ICONERROR);
+            return;
+        }
 
         MSG msg;
         while (GetMessage(&msg, nullptr, 0, 0)) {
@@ -1282,6 +1292,11 @@ public:
 
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
         KeyboardFilter* filter = (KeyboardFilter*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+
+        if (filter && filter->taskbarCreated && uMsg == filter->taskbarCreated) {
+            if (filter->keyboardHook) filter->CreateTrayIcon();
+            return 0;
+        }
 
         switch (uMsg) {
             case WM_TRAYICON:

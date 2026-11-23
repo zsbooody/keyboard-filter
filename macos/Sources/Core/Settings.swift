@@ -23,8 +23,8 @@ final class SettingsStore {
     private var saveWork: DispatchWorkItem?
     private var loaded = false
 
-    private init() {
-        defaults = UserDefaults(suiteName: Self.suiteName) ?? .standard
+    init(defaults: UserDefaults = UserDefaults(suiteName: SettingsStore.suiteName) ?? .standard) {
+        self.defaults = defaults
     }
 
     func load() {
@@ -53,6 +53,7 @@ final class SettingsStore {
     }
 
     func persistNow() {
+        guard loaded else { return }
         saveWork?.cancel()
         saveWork = nil
         defaults.set(mode.rawValue, forKey: "mode")

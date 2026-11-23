@@ -27,7 +27,7 @@ final class AdvancedSettingsModel: ObservableObject {
 
     var hint: String {
         if useAutoPage {
-            return "自动分析：只把极短接触抖动（约 ≤35ms）计入，正常快打不会纳入。可用鼠标点选/取消任意键。仅鼠标操作。"
+            return "自动分析：只把极短接触抖动（≤35 ms）计入。可用鼠标点选/取消任意键。仅鼠标操作。"
         }
         return "手动选键：用鼠标点选要防抖的键，再次点击可取消。仅鼠标操作。"
     }
