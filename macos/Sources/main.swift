@@ -7,6 +7,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if !acquireSingleInstance() {
+            // Registering a RunAtLoad LaunchAgent can start it immediately.
+            if ProcessInfo.processInfo.arguments.contains("--launched-at-login") {
+                NSApp.terminate(nil)
+                return
+            }
             let alert = NSAlert()
             alert.messageText = "键盘防抖工具已在运行中"
             alert.informativeText = "请检查菜单栏图标。"
@@ -35,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        guard instanceLock != nil else { return }
         SettingsStore.shared.persistNow()
         FilterEngine.shared.removeTap()
     }
@@ -44,16 +50,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .appendingPathComponent("Library/Application Support/KeyboardFilter")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let lockURL = dir.appendingPathComponent("instance.lock")
-        if !FileManager.default.fileExists(atPath: lockURL.path) {
-            FileManager.default.createFile(atPath: lockURL.path, contents: nil)
-        }
-        guard let handle = try? FileHandle(forWritingTo: lockURL) else { return true }
-        let fd = handle.fileDescriptor
+        let fd = open(lockURL.path, O_WRONLY | O_CREAT | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { return false }
         if flock(fd, LOCK_EX | LOCK_NB) != 0 {
-            try? handle.close()
+            close(fd)
             return false
         }
-        instanceLock = handle
+        instanceLock = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         return true
     }
 }

@@ -192,10 +192,16 @@ final class StatusBarController: NSObject {
 
     @objc private func toggleAutoStart() {
         let enabled = !SettingsStore.shared.autoStart
-        SettingsStore.shared.autoStart = enabled
-        AutoStartManager.apply(enabled: enabled)
-        SettingsStore.shared.requestDeferredSave()
-        rebuildMenu()
+        do {
+            try AutoStartManager.apply(enabled: enabled)
+            SettingsStore.shared.autoStart = enabled
+            SettingsStore.shared.requestDeferredSave()
+            rebuildMenu()
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.messageText = enabled ? "开启自启失败" : "关闭自启失败"
+            alert.runModal()
+        }
     }
 
     @objc private func testAntiBounce() {

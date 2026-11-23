@@ -10,7 +10,7 @@ enum AutoStartManager {
             .appendingPathComponent("\(launchLabel).plist")
     }
 
-    static func resolvedExecutablePath() -> String {
+    private static func resolvedExecutablePath() -> String? {
         if let exec = Bundle.main.executableURL?.path,
            FileManager.default.isExecutableFile(atPath: exec) {
             return exec
@@ -32,64 +32,87 @@ enum AutoStartManager {
             }
         }
 
-        return "/usr/local/bin/KeyboardFilter"
+        return nil
     }
 
-    static func apply(enabled: Bool) {
-        let plist = plistURL
+    private enum RegistrationError: LocalizedError {
+        case missingExecutable
+        case commandFailed(String, Int32)
+
+        var errorDescription: String? {
+            switch self {
+            case .missingExecutable: return "找不到可执行文件。"
+            case .commandFailed(let command, let status):
+                return "launchctl \(command) 失败（状态 \(status)）。"
+            }
+        }
+    }
+
+    static func apply(enabled: Bool) throws {
+        try apply(enabled: enabled, plist: plistURL, domain: "gui/\(getuid())",
+                  executablePath: resolvedExecutablePath(), run: runLaunchctl)
+    }
+
+    static func apply(enabled: Bool, plist: URL, domain: String, executablePath: String?,
+                      run: ([String]) -> Int32) throws {
+        let files = FileManager.default
+        let service = "\(domain)/\(launchLabel)"
+        let domainStatus = run(["print", domain])
+        guard domainStatus == 0 else {
+            throw RegistrationError.commandFailed("print", domainStatus)
+        }
+        let wasLoaded = run(["print", service]) == 0
+        let previous = files.fileExists(atPath: plist.path) ? try Data(contentsOf: plist) : nil
+
         if !enabled {
-            unload(plistURL: plist)
-            if FileManager.default.fileExists(atPath: plist.path) {
-                try? FileManager.default.removeItem(at: plist)
+            if wasLoaded {
+                let status = run(["bootout", service])
+                guard status == 0 else { throw RegistrationError.commandFailed("bootout", status) }
+            }
+            if previous != nil {
+                do {
+                    try files.removeItem(at: plist)
+                } catch {
+                    if wasLoaded { _ = run(["bootstrap", domain, plist.path]) }
+                    throw error
+                }
             }
             return
         }
 
-        let executablePath = resolvedExecutablePath()
-        let plistContent: [String: Any] = [
+        guard let executablePath = executablePath else { throw RegistrationError.missingExecutable }
+        let content: [String: Any] = [
             "Label": launchLabel,
             "ProgramArguments": [executablePath, "--launched-at-login"],
             "RunAtLoad": true,
             "KeepAlive": false,
             "ProcessType": "Interactive"
         ]
+        let data = try PropertyListSerialization.data(fromPropertyList: content, format: .xml, options: 0)
+        if wasLoaded && previous == data { return }
 
+        try files.createDirectory(at: plist.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if wasLoaded {
+            let status = run(["bootout", service])
+            guard status == 0 else { throw RegistrationError.commandFailed("bootout", status) }
+        }
+
+        var wrotePlist = false
         do {
-            try FileManager.default.createDirectory(
-                at: plist.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            let data = try PropertyListSerialization.data(
-                fromPropertyList: plistContent,
-                format: .xml,
-                options: 0
-            )
             try data.write(to: plist, options: .atomic)
-            load(plistURL: plist)
+            wrotePlist = true
+            let status = run(["bootstrap", domain, plist.path])
+            guard status == 0 else { throw RegistrationError.commandFailed("bootstrap", status) }
         } catch {
-            NSLog("创建启动项失败: \(error.localizedDescription)")
-        }
-    }
-
-    private static func load(plistURL: URL) {
-        let uid = getuid()
-        let domain = "gui/\(uid)"
-        let service = "\(domain)/\(launchLabel)"
-        _ = runLaunchctl(["bootout", service])
-        let bootstrap = runLaunchctl(["bootstrap", domain, plistURL.path])
-        if bootstrap != 0 {
-            _ = runLaunchctl(["unload", plistURL.path])
-            _ = runLaunchctl(["load", "-w", plistURL.path])
-        }
-    }
-
-    private static func unload(plistURL: URL) {
-        let uid = getuid()
-        let domain = "gui/\(uid)"
-        let service = "\(domain)/\(launchLabel)"
-        _ = runLaunchctl(["bootout", service])
-        if FileManager.default.fileExists(atPath: plistURL.path) {
-            _ = runLaunchctl(["unload", plistURL.path])
+            if wrotePlist {
+                if let previous = previous {
+                    try previous.write(to: plist, options: .atomic)
+                } else {
+                    try files.removeItem(at: plist)
+                }
+            }
+            if wasLoaded && previous != nil { _ = run(["bootstrap", domain, plist.path]) }
+            throw error
         }
     }
 

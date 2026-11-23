@@ -2,6 +2,7 @@ import Cocoa
 import Combine
 import CoreGraphics
 import Foundation
+import IOKit.hidsystem
 import QuartzCore
 
 let kLearnBounceMs: Double = 35
@@ -17,6 +18,69 @@ struct KeyInfo {
     var isBlocked = false
 }
 
+private enum KeySequence: Equatable {
+    case idle
+    case forwarded(protected: Bool)
+    case suppressed
+    case suppressedModifier
+
+    var wasForwarded: Bool {
+        if case .forwarded = self { return true }
+        return false
+    }
+
+    var wasSuppressed: Bool { self == .suppressed || self == .suppressedModifier }
+
+    var blocksNonRepeat: Bool {
+        switch self {
+        case .forwarded(let protected): return protected
+        case .suppressed, .suppressedModifier: return true
+        case .idle: return false
+        }
+    }
+}
+
+private struct ModifierPair {
+    let key: Int
+    let otherKey: Int
+    let flag: CGEventFlags
+    let side: CGEventFlags
+    let otherSide: CGEventFlags
+
+    static let leftShift = Self(key: 56, otherKey: 60, flag: .maskShift,
+                                side: .init(rawValue: UInt64(NX_DEVICELSHIFTKEYMASK)),
+                                otherSide: .init(rawValue: UInt64(NX_DEVICERSHIFTKEYMASK)))
+    static let leftControl = Self(key: 59, otherKey: 62, flag: .maskControl,
+                                  side: .init(rawValue: UInt64(NX_DEVICELCTLKEYMASK)),
+                                  otherSide: .init(rawValue: UInt64(NX_DEVICERCTLKEYMASK)))
+    static let leftOption = Self(key: 58, otherKey: 61, flag: .maskAlternate,
+                                 side: .init(rawValue: UInt64(NX_DEVICELALTKEYMASK)),
+                                 otherSide: .init(rawValue: UInt64(NX_DEVICERALTKEYMASK)))
+    static let leftCommand = Self(key: 55, otherKey: 54, flag: .maskCommand,
+                                  side: .init(rawValue: UInt64(NX_DEVICELCMDKEYMASK)),
+                                  otherSide: .init(rawValue: UInt64(NX_DEVICERCMDKEYMASK)))
+
+    static let leftSides = [leftShift, leftControl, leftOption, leftCommand]
+
+    var reversed: Self {
+        Self(key: otherKey, otherKey: key, flag: flag, side: otherSide, otherSide: side)
+    }
+
+    static func forKey(_ key: Int) -> Self? {
+        switch key {
+        case 56: return leftShift
+        case 60: return leftShift.reversed
+        case 59: return leftControl
+        case 62: return leftControl.reversed
+        case 58: return leftOption
+        case 61: return leftOption.reversed
+        case 55: return leftCommand
+        case 54: return leftCommand.reversed
+        default: return nil
+        }
+    }
+}
+
 struct AutoKeyStats {
     var rawLastMs: Double = 0
     var downStartedMs: Double = 0
@@ -26,7 +90,7 @@ struct AutoKeyStats {
     var cleanStreak = 0
 }
 
-/// 热路径固定数组、无堆分配；算法对齐 Windows v2.5.4。
+/// 每键输入状态与防抖计时保存在固定大小的数组中。
 final class FilterEngine: ObservableObject {
     static let shared = FilterEngine()
 
@@ -43,10 +107,15 @@ final class FilterEngine: ObservableObject {
     /// SwiftUI 观察自动名单变化。
     @Published private(set) var autoRevision: UInt64 = 0
 
-    fileprivate var modifierDown = [Bool](repeating: false, count: kKeyCount)
+    private var keySequences = [KeySequence](repeating: .idle, count: kKeyCount)
+    private var suppressedModifierCount = 0
     private var runLoopSource: CFRunLoopSource?
 
-    private init() {}
+    private let clock: () -> Double
+
+    init(clock: @escaping () -> Double = { CACurrentMediaTime() * 1000 }) {
+        self.clock = clock
+    }
 
     func loadFromSettings(_ store: SettingsStore = .shared) {
         mode = store.mode
@@ -82,7 +151,7 @@ final class FilterEngine: ObservableObject {
     }
 
     private func nowMs() -> Double {
-        CACurrentMediaTime() * 1000
+        clock()
     }
 
     /// 返回 true 表示该次按下应被拦截。
@@ -133,7 +202,7 @@ final class FilterEngine: ObservableObject {
                 if sinceDown >= kRepeatIgnoreMs {
                     return
                 }
-                if sinceLast < kLearnBounceMs {
+                if sinceLast <= kLearnBounceMs {
                     autoStats[key].anomalyHits += 1
                     autoStats[key].cleanStreak = 0
                     tryAdd()
@@ -149,7 +218,7 @@ final class FilterEngine: ObservableObject {
         autoStats[key].rawLastMs = now
         autoStats[key].hasRaw = true
 
-        if dt < kLearnBounceMs {
+        if dt <= kLearnBounceMs {
             autoStats[key].anomalyHits += 1
             autoStats[key].cleanStreak = 0
             tryAdd()
@@ -213,14 +282,15 @@ final class FilterEngine: ObservableObject {
     }
 
     func shouldBlockKeyDown(key: Int) -> Bool {
+        guard key >= 0 && key < kKeyCount else { return false }
         switch mode {
         case .quickAll:
             return applyDebounce(key)
         case .advanced:
-            return key < kKeyCount && targetMask[key] && applyDebounce(key)
+            return targetMask[key] && applyDebounce(key)
         case .autoLearn:
             analyzeRawKeyDown(key)
-            return key < kKeyCount && autoMask[key] && applyDebounce(key)
+            return autoMask[key] && applyDebounce(key)
         }
     }
 
@@ -255,6 +325,8 @@ final class FilterEngine: ObservableObject {
 
     func reenableTap() {
         if let tap = eventTap {
+            // The system can lose transitions while the tap is disabled.
+            resetInputState()
             CGEvent.tapEnable(tap: tap, enable: true)
         }
     }
@@ -269,23 +341,104 @@ final class FilterEngine: ObservableObject {
         }
         eventTap = nil
         runLoopSource = nil
+        resetInputState()
     }
 
-    func modifierIsDown(key: Int, flags: CGEventFlags) -> Bool {
-        switch key {
-        case 56, 60:
-            return flags.contains(.maskShift)
-        case 59, 62:
-            return flags.contains(.maskControl)
-        case 58, 61:
-            return flags.contains(.maskAlternate)
-        case 55, 54:
-            return flags.contains(.maskCommand)
-        case 63:
-            return flags.contains(.maskSecondaryFn)
-        default:
-            return false
+    private func resetInputState() {
+        for key in keySequences.indices {
+            keySequences[key] = .idle
+            keyStates[key] = KeyInfo()
+            autoStats[key].isDown = false
+            autoStats[key].hasRaw = false
         }
+        suppressedModifierCount = 0
+    }
+
+    private func modifierIsDown(key: Int, flags: CGEventFlags) -> Bool? {
+        if key == 63 { return flags.contains(.maskSecondaryFn) }
+        guard let pair = ModifierPair.forKey(key) else { return nil }
+        if !flags.contains(pair.flag) { return false }
+        if !flags.intersection([pair.side, pair.otherSide]).isEmpty {
+            return flags.contains(pair.side)
+        }
+        // A side-less event toggles this key when its peer explains the aggregate bit.
+        if keySequences[pair.otherKey] != .idle {
+            return keySequences[key] == .idle
+        }
+        return keySequences[key] == .idle ? true : nil
+    }
+
+    private func forwardedFlags(_ flags: CGEventFlags) -> CGEventFlags {
+        guard suppressedModifierCount > 0 else { return flags }
+        var result = flags
+        for pair in ModifierPair.leftSides {
+            let blocked = keySequences[pair.key] == .suppressedModifier
+            let otherBlocked = keySequences[pair.otherKey] == .suppressedModifier
+            guard blocked || otherBlocked else { continue }
+            if blocked { result.remove(pair.side) }
+            if otherBlocked { result.remove(pair.otherSide) }
+            let knownForwarded = keySequences[pair.key].wasForwarded ||
+                keySequences[pair.otherKey].wasForwarded
+            if !knownForwarded && result.intersection([pair.side, pair.otherSide]).isEmpty {
+                result.remove(pair.flag)
+            }
+        }
+        if keySequences[63] == .suppressedModifier { result.remove(.maskSecondaryFn) }
+        return result
+    }
+
+    func processKeyEvent(_ type: CGEventType, event: CGEvent) -> Bool {
+        let key = Int(event.getIntegerValueField(.keyboardEventKeycode))
+        if key >= 0 && key < kKeyCount {
+            switch type {
+            case .flagsChanged:
+                if let down = modifierIsDown(key: key, flags: event.flags) {
+                    if down {
+                        if keySequences[key] == .idle {
+                            let blocked = shouldBlockKeyDown(key: key)
+                            keySequences[key] = blocked ? .suppressedModifier : .forwarded(protected: filtersKey(key))
+                            if blocked { suppressedModifierCount += 1 }
+                        }
+                        if keySequences[key].wasSuppressed { return false }
+                    } else if releaseKey(key) {
+                        return false
+                    }
+                }
+            case .keyDown:
+                if event.getIntegerValueField(.keyboardEventAutorepeat) != 0 {
+                    if keySequences[key].wasSuppressed { return false }
+                } else if keySequences[key] == .idle {
+                    let block = shouldBlockKeyDown(key: key)
+                    keySequences[key] = block ? .suppressed : .forwarded(protected: filtersKey(key))
+                    if block { return false }
+                } else {
+                    if mode == .autoLearn { analyzeRawKeyDown(key) }
+                    if keySequences[key].blocksNonRepeat { return false }
+                }
+            case .keyUp:
+                if releaseKey(key) { return false }
+            default:
+                break
+            }
+        }
+        if suppressedModifierCount > 0 { event.flags = forwardedFlags(event.flags) }
+        return true
+    }
+
+    private func filtersKey(_ key: Int) -> Bool {
+        switch mode {
+        case .quickAll: return true
+        case .advanced: return targetMask[key]
+        case .autoLearn: return autoMask[key]
+        }
+    }
+
+    private func releaseKey(_ key: Int) -> Bool {
+        if mode == .autoLearn || autoStats[key].isDown { analyzeRawKeyUp(key) }
+        let sequence = keySequences[key]
+        if sequence == .suppressedModifier { suppressedModifierCount -= 1 }
+        keySequences[key] = .idle
+        return sequence.wasSuppressed
     }
 }
 
@@ -300,32 +453,5 @@ func eventTapCallback(
         engine.reenableTap()
         return Unmanaged.passUnretained(event)
     }
-
-    let key = Int(event.getIntegerValueField(.keyboardEventKeycode))
-
-    if type == .flagsChanged {
-        let down = engine.modifierIsDown(key: key, flags: event.flags)
-        let wasDown = (key >= 0 && key < kKeyCount) ? engine.modifierDown[key] : false
-        if key >= 0 && key < kKeyCount {
-            engine.modifierDown[key] = down
-        }
-        if down && !wasDown {
-            if engine.shouldBlockKeyDown(key: key) { return nil }
-        } else if !down && wasDown {
-            if engine.mode == .autoLearn { engine.analyzeRawKeyUp(key) }
-        }
-        return Unmanaged.passUnretained(event)
-    }
-
-    if type == .keyUp {
-        if engine.mode == .autoLearn { engine.analyzeRawKeyUp(key) }
-        return Unmanaged.passUnretained(event)
-    }
-    guard type == .keyDown else { return Unmanaged.passUnretained(event) }
-
-    let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-    if isRepeat { return Unmanaged.passUnretained(event) }
-
-    if engine.shouldBlockKeyDown(key: key) { return nil }
-    return Unmanaged.passUnretained(event)
+    return engine.processKeyEvent(type, event: event) ? Unmanaged.passUnretained(event) : nil
 }
